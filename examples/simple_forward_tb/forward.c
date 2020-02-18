@@ -69,7 +69,7 @@ static uint32_t tb_rate = 100; //1 token every 100micro-seconds
 static uint32_t tb_depth = 10000;
 static uint64_t tb_last_token_produced_at;
 static uint64_t tb_cur_time;
-static uint32_t tb_tokens = depth;
+static uint32_t tb_tokens = 10000;
 
 /*
  * Print a usage message
@@ -82,6 +82,8 @@ usage(const char *progname) {
         printf("Flags:\n");
         printf(" - `-d <dst>`: destination service ID to foward to\n");
         printf(" - `-p <print_delay>`: number of packets between each print, e.g. `-p 1` prints every packets.\n");
+        printf(" - `-D <tb_depth>`: depth of token bucket\n");
+        printf(" - `-R <tb_rate>`: rate of token regeneration in micro-seconds\n");
 }
 
 /*
@@ -91,7 +93,7 @@ static int
 parse_app_args(int argc, char *argv[], const char *progname) {
         int c, dst_flag = 0;
 
-        while ((c = getopt(argc, argv, "d:p:")) != -1) {
+        while ((c = getopt(argc, argv, "d:p:R:D")) != -1) {
                 switch (c) {
                         case 'd':
                                 destination = strtoul(optarg, NULL, 10);
@@ -100,6 +102,12 @@ parse_app_args(int argc, char *argv[], const char *progname) {
                         case 'p':
                                 print_delay = strtoul(optarg, NULL, 10);
                                 break;
+			case 'R':
+				tb_rate = strtoul(optarg, NULL, 10);
+				break;
+			case 'D':
+				tb_depth = strtoul(optarg, NULL, 10);
+				break;
                         case '?':
                                 usage(progname);
                                 if (optopt == 'd')
@@ -170,7 +178,10 @@ packet_handler(struct rte_mbuf *pkt, struct onvm_pkt_meta *meta,
             uint64_t time_elapsed = tb_cur_time - tb_last_token_produced_at;
             time_elapsed = time_elapsed - time_elapsed % tb_rate;
             if (time_elapsed > 0){
-                tb_tokens += time_elapsed / tb_rate;
+		if (time_elapsed / tb_rate > tb_depth)
+		    tb_tokens += tb_depth;
+		else
+                    tb_tokens += time_elapsed / tb_rate;
                 tb_last_token_produced_at += time_elapsed;
             }
         }
