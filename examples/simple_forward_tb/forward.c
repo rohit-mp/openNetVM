@@ -174,7 +174,7 @@ packet_handler(struct rte_mbuf *pkt, struct onvm_pkt_meta *meta,
         while (tb_tokens == 0) {
             struct timeval curTime;
             gettimeofday(&curTime, NULL);
-            tb_cur_time = curTime.tv_sec * 1000000 + curTime.tv_sec;
+            tb_cur_time = curTime.tv_sec * 1000000 + curTime.tv_usec;
             uint64_t time_elapsed = tb_cur_time - tb_last_token_produced_at;
             time_elapsed = time_elapsed - time_elapsed % tb_rate;
             if (time_elapsed > 0){
