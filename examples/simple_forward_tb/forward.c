@@ -83,7 +83,7 @@ usage(const char *progname) {
         printf(" - `-d <dst>`: destination service ID to foward to\n");
         printf(" - `-p <print_delay>`: number of packets between each print, e.g. `-p 1` prints every packets.\n");
         printf(" - `-D <tb_depth>`: depth of token bucket\n");
-        printf(" - `-R <tb_rate>`: rate of token regeneration in micro-seconds\n");
+        printf(" - `-R <tb_rate>`: rate of token regeneration in micro-seconds (No. of bytes transmitted depends on tokens) \n");
 }
 
 /*
@@ -171,16 +171,16 @@ packet_handler(struct rte_mbuf *pkt, struct onvm_pkt_meta *meta,
                __attribute__((unused)) struct onvm_nf_local_ctx *nf_local_ctx) {
         static uint32_t counter = 0;
 
-        while (tb_tokens == 0) {
+        while (tb_tokens < pkt->pkt_len) {
             struct timeval curTime;
             gettimeofday(&curTime, NULL);
             tb_cur_time = curTime.tv_sec * 1000000 + curTime.tv_usec;
             uint64_t time_elapsed = tb_cur_time - tb_last_token_produced_at;
             time_elapsed = time_elapsed - time_elapsed % tb_rate;
             if (time_elapsed > 0){
-		if (time_elapsed / tb_rate > tb_depth)
-		    tb_tokens += tb_depth;
-		else
+        		if (time_elapsed / tb_rate > tb_depth)
+        		    tb_tokens += tb_depth;
+        		else
                     tb_tokens += time_elapsed / tb_rate;
                 tb_last_token_produced_at += time_elapsed;
             }
@@ -191,7 +191,7 @@ packet_handler(struct rte_mbuf *pkt, struct onvm_pkt_meta *meta,
                 counter = 0;
         }
 
-        tb_tokens--;
+        tb_tokens -= pkt->pkt_len;
 
         meta->action = ONVM_NF_ACTION_TONF;
         meta->destination = destination;
