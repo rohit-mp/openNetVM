@@ -52,24 +52,24 @@
 #include <rte_common.h>
 #include <rte_ip.h>
 #include <rte_mbuf.h>
+#include <rte_cycles.h>
 
 #include "onvm_nflib.h"
 #include "onvm_pkt_helper.h"
 
-#include <sys/time.h>
-
-#define NF_TAG "simple_forward"
+#define NF_TAG "simple_forward_tb"
 
 /* number of package between each print */
 static uint32_t print_delay = 1000000;
 
 static uint32_t destination;
 
-static uint32_t tb_rate = 100; //1 token every 100micro-seconds
-static uint32_t tb_depth = 10000;
-static uint64_t tb_last_token_produced_at;
-static uint64_t tb_cur_time;
+static uint32_t tb_rate = 1000; // 1 kbps
+static uint32_t tb_depth = 10000; //max burst of 10 kbps
 static uint32_t tb_tokens = 10000;
+
+static uint64_t last_cycle;
+static uint64_t cur_cycles;
 
 /*
  * Print a usage message
@@ -77,13 +77,13 @@ static uint32_t tb_tokens = 10000;
 static void
 usage(const char *progname) {
         printf("Usage:\n");
-        printf("%s [EAL args] -- [NF_LIB args] -- -d <destination> -p <print_delay>\n", progname);
+        printf("%s [EAL args] -- [NF_LIB args] -- -d <destination> -p <print_delay> -D <tb_depth> -R <tb_rate>\n", progname);
         printf("%s -F <CONFIG_FILE.json> [EAL args] -- [NF_LIB args] -- [NF args]\n\n", progname);
         printf("Flags:\n");
         printf(" - `-d <dst>`: destination service ID to foward to\n");
         printf(" - `-p <print_delay>`: number of packets between each print, e.g. `-p 1` prints every packets.\n");
-        printf(" - `-D <tb_depth>`: depth of token bucket\n");
-        printf(" - `-R <tb_rate>`: rate of token regeneration in micro-seconds (No. of bytes transmitted depends on tokens) \n");
+        printf(" - `-D <tb_depth>`: depth of token bucket (in bytes)\n");
+        printf(" - `-R <tb_rate>`: rate of token regeneration (number of tokens generated per micro second) \n");
 }
 
 /*
@@ -102,12 +102,13 @@ parse_app_args(int argc, char *argv[], const char *progname) {
                         case 'p':
                                 print_delay = strtoul(optarg, NULL, 10);
                                 break;
-			case 'R':
-				tb_rate = strtoul(optarg, NULL, 10);
-				break;
-			case 'D':
-				tb_depth = strtoul(optarg, NULL, 10);
-				break;
+            			case 'R':
+                				tb_rate = strtoul(optarg, NULL, 10);
+                				break;
+            			case 'D':
+                				tb_depth = strtoul(optarg, NULL, 10);
+                                tb_tokens = tb_depth;
+                				break;
                         case '?':
                                 usage(progname);
                                 if (optopt == 'd')
@@ -170,20 +171,20 @@ static int
 packet_handler(struct rte_mbuf *pkt, struct onvm_pkt_meta *meta,
                __attribute__((unused)) struct onvm_nf_local_ctx *nf_local_ctx) {
         static uint32_t counter = 0;
+        
+        if (tb_tokens < pkt->pkt_len) {
+                cur_cycles = rte_get_tsc_cycles();
+                while ((((cur_cycles - last_cycle) * tb_rate * 1000000) / rte_get_timer_hz()) + tb_tokens < pkt->pkt_len) {
+                        cur_cycles = rte_get_tsc_cycles();
+                }
+                uint64_t tokens_produced = (((cur_cycles - last_cycle) * tb_rate * 1000000) / rte_get_timer_hz());
+                if (tokens_produced + tb_tokens > tb_depth) {
+                        tb_tokens = tb_depth;
+                } else {
+                        tb_tokens += tokens_produced;
+                }
 
-        while (tb_tokens < pkt->pkt_len) {
-            struct timeval curTime;
-            gettimeofday(&curTime, NULL);
-            tb_cur_time = curTime.tv_sec * 1000000 + curTime.tv_usec;
-            uint64_t time_elapsed = tb_cur_time - tb_last_token_produced_at;
-            time_elapsed = time_elapsed - time_elapsed % tb_rate;
-            if (time_elapsed > 0){
-        		if (time_elapsed / tb_rate > tb_depth)
-        		    tb_tokens += tb_depth;
-        		else
-                    tb_tokens += time_elapsed / tb_rate;
-                tb_last_token_produced_at += time_elapsed;
-            }
+                last_cycle = cur_cycles;
         }
 
         if (++counter == print_delay) {
@@ -203,10 +204,6 @@ main(int argc, char *argv[]) {
         struct onvm_nf_local_ctx *nf_local_ctx;
         struct onvm_nf_function_table *nf_function_table;
         int arg_offset;
-
-        struct timeval curTime;
-        gettimeofday(&curTime, NULL);
-        tb_last_token_produced_at = curTime.tv_sec * 1000000 + curTime.tv_sec;
 
         const char *progname = argv[0];
 
@@ -233,6 +230,9 @@ main(int argc, char *argv[]) {
                 onvm_nflib_stop(nf_local_ctx);
                 rte_exit(EXIT_FAILURE, "Invalid command-line arguments\n");
         }
+
+        cur_cycles = rte_get_tsc_cycles();
+        last_cycle = rte_get_tsc_cycles();
 
         onvm_nflib_run(nf_local_ctx);
 
