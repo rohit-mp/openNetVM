@@ -59,6 +59,8 @@
 
 #define NF_TAG "simple_forward_tb"
 
+#define PKT_READ_SIZE ((uint16_t) 100000000)
+
 /* number of package between each print */
 static uint32_t print_delay = 1000000;
 
@@ -70,6 +72,11 @@ static uint32_t tb_tokens = 10000;
 
 static uint64_t last_cycle;
 static uint64_t cur_cycles;
+
+/* For advanced rings scaling */
+rte_atomic16_t signal_exit_flag;
+
+void sig_handler(int sig);
 
 /*
  * Print a usage message
@@ -91,9 +98,10 @@ usage(const char *progname) {
  */
 static int
 parse_app_args(int argc, char *argv[], const char *progname) {
+
         int c, dst_flag = 0;
 
-        while ((c = getopt(argc, argv, "d:p:R:D")) != -1) {
+        while ((c = getopt(argc, argv, "d:p:D:R:")) != -1) {
                 switch (c) {
                         case 'd':
                                 destination = strtoul(optarg, NULL, 10);
@@ -168,7 +176,7 @@ do_stats_display(struct rte_mbuf *pkt) {
 }
 
 static int
-packet_handler(struct rte_mbuf *pkt, struct onvm_pkt_meta *meta,
+packet_handler_tb(struct rte_mbuf *pkt, struct onvm_pkt_meta *meta,
                __attribute__((unused)) struct onvm_nf_local_ctx *nf_local_ctx) {
         static uint32_t counter = 0;
         
@@ -199,6 +207,83 @@ packet_handler(struct rte_mbuf *pkt, struct onvm_pkt_meta *meta,
         return 0;
 }
 
+void sig_handler(int sig) {
+        if (sig != SIGINT && sig != SIGTERM)
+                return;
+
+        /* Will stop the processing for all spawned threads in advanced rings mode */
+        rte_atomic16_set(&signal_exit_flag, 1);
+}
+
+static int
+thread_main_loop(struct onvm_nf_local_ctx *nf_local_ctx) {
+        void *pkts[PKT_READ_SIZE];
+        struct onvm_pkt_meta *meta;
+        uint16_t i, j, nb_pkts;
+        void *pktsTX[PKT_READ_SIZE];
+        int tx_batch_size;
+        struct rte_ring *rx_ring;
+        struct rte_ring *tx_ring;
+        struct rte_ring *msg_q;
+        struct onvm_nf *nf;
+        struct onvm_nf_msg *msg;
+        struct rte_mempool *nf_msg_pool;
+
+        nf = nf_local_ctx->nf;
+
+        onvm_nflib_nf_ready(nf);
+
+        /* Get rings from nflib */
+        rx_ring = nf->rx_q;
+        tx_ring = nf->tx_q;
+        msg_q = nf->msg_q;
+        nf_msg_pool = rte_mempool_lookup(_NF_MSG_POOL_NAME);
+
+        printf("Process %d handling packets using advanced rings\n", nf->instance_id);
+        if (onvm_threading_core_affinitize(nf->thread_info.core) < 0)
+                rte_exit(EXIT_FAILURE, "Failed to affinitize to core %d\n", nf->thread_info.core);
+
+        while (!rte_atomic16_read(&signal_exit_flag)) {
+                /* Check for a stop message from the manager */
+                if (unlikely(rte_ring_count(msg_q) > 0)) {
+                        msg = NULL;
+                        rte_ring_dequeue(msg_q, (void **)(&msg));
+                        if (msg->msg_type == MSG_STOP) {
+                                rte_atomic16_set(&signal_exit_flag, 1);
+                        } else {
+                                printf("Received message %d, ignoring", msg->msg_type);
+                        }
+                        rte_mempool_put(nf_msg_pool, (void *)msg);
+                }
+
+                tx_batch_size = 0;
+                /* Dequeue all packets in ring up to max possible */
+                nb_pkts = rte_ring_dequeue_burst(rx_ring, pkts, PKT_READ_SIZE, NULL);
+
+                /* Process all the packets */
+                // for (i = 0; i < nb_pkts; i++) {
+                for (i = 0; i < nb_pkts && i < tb_depth; i++) {
+                        meta = onvm_get_pkt_meta((struct rte_mbuf *)pkts[i]);
+                        packet_handler_tb((struct rte_mbuf *)pkts[i], meta, nf_local_ctx);
+                        pktsTX[tx_batch_size++] = pkts[i];
+                }
+                for(i = tb_depth; i < nb_pkts; i++) {
+                        meta = onvm_get_pkt_meta((struct rte_mbuf *)pkts[i]);
+                        meta->action = ONVM_NF_ACTION_DROP;
+                }
+
+                if (unlikely(tx_batch_size > 0 && rte_ring_enqueue_bulk(tx_ring, pktsTX, tx_batch_size, NULL) == 0)) {
+                        nf->stats.tx_drop += tx_batch_size;
+                        for (j = 0; j < tx_batch_size; j++) {
+                                rte_pktmbuf_free(pktsTX[j]);
+                        }
+                } else {
+                        nf->stats.tx += tx_batch_size;
+                }
+        }
+        return 0;
+}
+
 int
 main(int argc, char *argv[]) {
         struct onvm_nf_local_ctx *nf_local_ctx;
@@ -208,10 +293,13 @@ main(int argc, char *argv[]) {
         const char *progname = argv[0];
 
         nf_local_ctx = onvm_nflib_init_nf_local_ctx();
-        onvm_nflib_start_signal_handler(nf_local_ctx, NULL);
-
-        nf_function_table = onvm_nflib_init_nf_function_table();
-        nf_function_table->pkt_handler = &packet_handler;
+        /* If we're using advanced rings also pass a custom cleanup function,
+         * this can be used to handle NF specific (non onvm) cleanup logic */
+        rte_atomic16_init(&signal_exit_flag);
+        rte_atomic16_set(&signal_exit_flag, 0);
+        onvm_nflib_start_signal_handler(nf_local_ctx, sig_handler);
+        /* No need to define a function table as adv rings won't run onvm_nflib_run */
+        nf_function_table = NULL;
 
         if ((arg_offset = onvm_nflib_init(argc, argv, NF_TAG, nf_local_ctx, nf_function_table)) < 0) {
                 onvm_nflib_stop(nf_local_ctx);
@@ -231,12 +319,9 @@ main(int argc, char *argv[]) {
                 rte_exit(EXIT_FAILURE, "Invalid command-line arguments\n");
         }
 
-        cur_cycles = rte_get_tsc_cycles();
-        last_cycle = rte_get_tsc_cycles();
+        thread_main_loop(nf_local_ctx);
+        onvm_nflib_stop(nf_local_ctx);     
 
-        onvm_nflib_run(nf_local_ctx);
-
-        onvm_nflib_stop(nf_local_ctx);
         printf("If we reach here, program is ending\n");
         return 0;
 }
