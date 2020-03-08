@@ -180,12 +180,15 @@ packet_handler_tb(struct rte_mbuf *pkt, struct onvm_pkt_meta *meta,
                __attribute__((unused)) struct onvm_nf_local_ctx *nf_local_ctx) {
         static uint32_t counter = 0;
         
+        /* Generate tokens only if `tb_tokens` is insufficient */
         if (tb_tokens < pkt->pkt_len) {
                 cur_cycles = rte_get_tsc_cycles();
+                /* Wait until sufficient tokens are available */
                 while ((((cur_cycles - last_cycle) * tb_rate * 1000000) / rte_get_timer_hz()) + tb_tokens < pkt->pkt_len) {
                         cur_cycles = rte_get_tsc_cycles();
                 }
                 uint64_t tokens_produced = (((cur_cycles - last_cycle) * tb_rate * 1000000) / rte_get_timer_hz());
+                /* Update tokens to a max of tb_depth */
                 if (tokens_produced + tb_tokens > tb_depth) {
                         tb_tokens = tb_depth;
                 } else {
@@ -257,16 +260,16 @@ thread_main_loop(struct onvm_nf_local_ctx *nf_local_ctx) {
                 }
 
                 tx_batch_size = 0;
-                /* Dequeue all packets in ring up to max possible */
+                /* Dequeue all packets in ring up to max possible (PKT_READ_SIZE)*/
                 nb_pkts = rte_ring_dequeue_burst(rx_ring, pkts, PKT_READ_SIZE, NULL);
 
-                /* Process all the packets */
-                // for (i = 0; i < nb_pkts; i++) {
+                /* Process all the packets upto a max of tb_depth*/
                 for (i = 0; i < nb_pkts && i < tb_depth; i++) {
                         meta = onvm_get_pkt_meta((struct rte_mbuf *)pkts[i]);
                         packet_handler_tb((struct rte_mbuf *)pkts[i], meta, nf_local_ctx);
                         pktsTX[tx_batch_size++] = pkts[i];
                 }
+                /* Drop all excess packets */
                 for(i = tb_depth; i < nb_pkts; i++) {
                         meta = onvm_get_pkt_meta((struct rte_mbuf *)pkts[i]);
                         meta->action = ONVM_NF_ACTION_DROP;
