@@ -270,6 +270,7 @@ thread_main_loop(struct onvm_nf_local_ctx *nf_local_ctx) {
                 for(i = tb_depth; i < nb_pkts; i++) {
                         meta = onvm_get_pkt_meta((struct rte_mbuf *)pkts[i]);
                         meta->action = ONVM_NF_ACTION_DROP;
+                        nf->stats.act_drop += 1;
                 }
 
                 if (unlikely(tx_batch_size > 0 && rte_ring_enqueue_bulk(tx_ring, pktsTX, tx_batch_size, NULL) == 0)) {
