@@ -57,7 +57,7 @@
 #include "onvm_nflib.h"
 #include "onvm_pkt_helper.h"
 
-#define NF_TAG "simple_forward_tb"
+#define NF_TAG "simple_fwd_tb"
 
 #define PKT_READ_SIZE ((uint16_t) 100000000)
 
