@@ -67,9 +67,9 @@ static uint32_t print_delay = 1000000;
 static uint32_t destination;
 
 /* Token Bucket */
-static uint32_t tb_rate = 1000;
-static uint32_t tb_depth = 10000;
-static uint32_t tb_tokens = 10000;
+static uint64_t tb_rate = 1000;
+static uint64_t tb_depth = 10000;
+static uint64_t tb_tokens = 10000;
 
 static uint64_t last_cycle;
 static uint64_t cur_cycles;
@@ -90,8 +90,8 @@ usage(const char *progname) {
         printf("Flags:\n");
         printf(" - `-d <dst>`: destination service ID to foward to\n");
         printf(" - `-p <print_delay>`: number of packets between each print, e.g. `-p 1` prints every packets.\n");
-        printf(" - `-D <tb_depth>`: depth of token bucket (in bytes) (>=32)\n");
-        printf(" - `-R <tb_rate>`: rate of token regeneration (number of tokens generated per micro second) \n");
+        printf(" - `-D <tb_depth>`: depth of token bucket (in bytes)\n");
+        printf(" - `-R <tb_rate>`: rate of token regeneration (in mbps) \n");
 }
 
 /*
@@ -116,10 +116,6 @@ parse_app_args(int argc, char *argv[], const char *progname) {
                 				break;
             			case 'D':
                 				tb_depth = strtoul(optarg, NULL, 10);
-                                if (tb_depth < 32) {
-                                        RTE_LOG(INFO, APP, "Option -D requires an argument >= 32.\n");
-                                        return -1;
-                                }
                                 tb_tokens = tb_depth;
                 				break;
                         case '?':
@@ -184,6 +180,7 @@ static int
 packet_handler_tb(struct rte_mbuf *pkt, struct onvm_pkt_meta *meta,
                __attribute__((unused)) struct onvm_nf_local_ctx *nf_local_ctx) {
         static uint32_t counter = 0;
+        uint64_t tokens_produced;
         
         /* Generate tokens only if `tb_tokens` is insufficient */
         if (tb_tokens < pkt->pkt_len) {
@@ -192,7 +189,7 @@ packet_handler_tb(struct rte_mbuf *pkt, struct onvm_pkt_meta *meta,
                 while ((((cur_cycles - last_cycle) * tb_rate * 1000000) / rte_get_timer_hz()) + tb_tokens < pkt->pkt_len) {
                         cur_cycles = rte_get_tsc_cycles();
                 }
-                uint64_t tokens_produced = (((cur_cycles - last_cycle) * tb_rate * 1000000) / rte_get_timer_hz());
+                tokens_produced = (((cur_cycles - last_cycle) * tb_rate * 1000000) / rte_get_timer_hz());
                 /* Update tokens to a max of tb_depth */
                 if (tokens_produced + tb_tokens > tb_depth) {
                         tb_tokens = tb_depth;
@@ -236,6 +233,7 @@ thread_main_loop(struct onvm_nf_local_ctx *nf_local_ctx) {
         struct onvm_nf *nf;
         struct onvm_nf_msg *msg;
         struct rte_mempool *nf_msg_pool;
+        uint64_t pkt_processed_size;
 
         nf = nf_local_ctx->nf;
 
@@ -269,13 +267,15 @@ thread_main_loop(struct onvm_nf_local_ctx *nf_local_ctx) {
                 nb_pkts = rte_ring_dequeue_burst(rx_ring, pkts, PKT_READ_SIZE, NULL);
 
                 /* Process all the packets upto a max of tb_depth */
-                for (i = 0; i < nb_pkts && i < tb_depth; i++) {
+                pkt_processed_size = 0;
+                for (i = 0; i < nb_pkts && pkt_processed_size < tb_depth; i++) {
                         meta = onvm_get_pkt_meta((struct rte_mbuf *)pkts[i]);
                         packet_handler_tb((struct rte_mbuf *)pkts[i], meta, nf_local_ctx);
                         pktsTX[tx_batch_size++] = pkts[i];
+                        pkt_processed_size += ((struct rte_mbuf *)pkts[i])->pkt_len;
                 }
                 /* Mark all excess packets to be dropped */
-                for(i = tb_depth; i < nb_pkts; i++) {
+                for(; i < nb_pkts; i++) {
                         meta = onvm_get_pkt_meta((struct rte_mbuf *)pkts[i]);
                         meta->action = ONVM_NF_ACTION_DROP;
                         pktsTX[tx_batch_size++] = pkts[i];
