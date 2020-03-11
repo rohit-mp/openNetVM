@@ -268,7 +268,7 @@ thread_main_loop(struct onvm_nf_local_ctx *nf_local_ctx) {
 
                 /* Process all the packets upto a max of tb_depth */
                 pkt_processed_size = 0;
-                for (i = 0; i < nb_pkts && pkt_processed_size < tb_depth; i++) {
+                for (i = 0; i < nb_pkts && pkt_processed_size + ((struct rte_mbuf *)pkts[i])->pkt_len <= tb_depth; i++) {
                         meta = onvm_get_pkt_meta((struct rte_mbuf *)pkts[i]);
                         packet_handler_tb((struct rte_mbuf *)pkts[i], meta, nf_local_ctx);
                         pktsTX[tx_batch_size++] = pkts[i];
