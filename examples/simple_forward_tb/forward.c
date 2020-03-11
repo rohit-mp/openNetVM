@@ -59,15 +59,16 @@
 
 #define NF_TAG "simple_fwd_tb"
 
-#define PKT_READ_SIZE ((uint16_t) 100000000)
+#define PKT_READ_SIZE ((uint16_t) 100000000) // TODO: Find proper value for PKT_READ_SIZE
 
 /* number of package between each print */
 static uint32_t print_delay = 1000000;
 
 static uint32_t destination;
 
-static uint32_t tb_rate = 1000; // 1 kbps
-static uint32_t tb_depth = 10000; //max burst of 10 kbps
+/* Token Bucket */
+static uint32_t tb_rate = 1000;
+static uint32_t tb_depth = 10000;
 static uint32_t tb_tokens = 10000;
 
 static uint64_t last_cycle;
@@ -89,7 +90,7 @@ usage(const char *progname) {
         printf("Flags:\n");
         printf(" - `-d <dst>`: destination service ID to foward to\n");
         printf(" - `-p <print_delay>`: number of packets between each print, e.g. `-p 1` prints every packets.\n");
-        printf(" - `-D <tb_depth>`: depth of token bucket (in bytes)\n");
+        printf(" - `-D <tb_depth>`: depth of token bucket (in bytes) (>=32)\n");
         printf(" - `-R <tb_rate>`: rate of token regeneration (number of tokens generated per micro second) \n");
 }
 
@@ -115,6 +116,10 @@ parse_app_args(int argc, char *argv[], const char *progname) {
                 				break;
             			case 'D':
                 				tb_depth = strtoul(optarg, NULL, 10);
+                                if (tb_depth < 32) {
+                                        RTE_LOG(INFO, APP, "Option -D requires an argument >= 32.\n");
+                                        return -1;
+                                }
                                 tb_tokens = tb_depth;
                 				break;
                         case '?':
@@ -222,7 +227,7 @@ static int
 thread_main_loop(struct onvm_nf_local_ctx *nf_local_ctx) {
         void *pkts[PKT_READ_SIZE];
         struct onvm_pkt_meta *meta;
-        uint16_t i, j, nb_pkts;
+        uint16_t i, nb_pkts;
         void *pktsTX[PKT_READ_SIZE];
         int tx_batch_size;
         struct rte_ring *rx_ring;
@@ -260,29 +265,24 @@ thread_main_loop(struct onvm_nf_local_ctx *nf_local_ctx) {
                 }
 
                 tx_batch_size = 0;
-                /* Dequeue all packets in ring up to max possible (PKT_READ_SIZE)*/
+                /* Dequeue all packets in rx_ring up to max possible (PKT_READ_SIZE)*/
                 nb_pkts = rte_ring_dequeue_burst(rx_ring, pkts, PKT_READ_SIZE, NULL);
 
-                /* Process all the packets upto a max of tb_depth*/
+                /* Process all the packets upto a max of tb_depth */
                 for (i = 0; i < nb_pkts && i < tb_depth; i++) {
                         meta = onvm_get_pkt_meta((struct rte_mbuf *)pkts[i]);
                         packet_handler_tb((struct rte_mbuf *)pkts[i], meta, nf_local_ctx);
                         pktsTX[tx_batch_size++] = pkts[i];
                 }
-                /* Drop all excess packets */
+                /* Mark all excess packets to be dropped */
                 for(i = tb_depth; i < nb_pkts; i++) {
                         meta = onvm_get_pkt_meta((struct rte_mbuf *)pkts[i]);
                         meta->action = ONVM_NF_ACTION_DROP;
-                        nf->stats.act_drop += 1;
+                        pktsTX[tx_batch_size++] = pkts[i];
                 }
-
-                if (unlikely(tx_batch_size > 0 && rte_ring_enqueue_bulk(tx_ring, pktsTX, tx_batch_size, NULL) == 0)) {
-                        nf->stats.tx_drop += tx_batch_size;
-                        for (j = 0; j < tx_batch_size; j++) {
-                                rte_pktmbuf_free(pktsTX[j]);
-                        }
-                } else {
-                        nf->stats.tx += tx_batch_size;
+                /* Enqueue all packets to the tx_ring */
+                if (likely(tx_batch_size > 0)) {
+                        rte_ring_enqueue_bulk(tx_ring, pktsTX, tx_batch_size, NULL);
                 }
         }
         return 0;
