@@ -4,11 +4,12 @@ Example NF that simulates a queue with a token bucket and forwards packets to a 
 
 Compilation and Execution
 --
-
+```
 cd examples
 make
 cd simple_forward_tb
-
+```
+```
 ./go.sh SERVICE_ID -d DST [-p PRINT_DELAY] [-D TOKEN_BUCKET_DEPTH] [-R TOKEN_BUCKET_RATE]
 
 OR
@@ -18,7 +19,7 @@ OR
 OR
 
 sudo ./build/forward -l CORELIST -n 3 --proc-type=secondary -- -r SERVICE_ID -- -d DST [-p PRINT_DELAY] [-D TOKEN_BUCKET_DEPTH] [-R TOKEN_BUCKET_RATE]
-
+```
 
 App Specific Arguments
 --
