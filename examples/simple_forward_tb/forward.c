@@ -5,8 +5,7 @@
  *   BSD LICENSE
  *
  *   Copyright(c)
- *            2015-2019 George Washington University
- *            2015-2019 University of California Riverside
+ *            2020 National Institute of Technology Karnataka, Surathkal
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -35,7 +34,8 @@
  *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
- * forward.c - an example using onvm. Forwards packets to a DST NF.
+ * forward.c - an example using onvm. Simulates a queue with a Token Bucket
+ * and forwards packets to a DST NF.
  ********************************************************************/
 
 #include <errno.h>
@@ -112,12 +112,12 @@ parse_app_args(int argc, char *argv[], const char *progname) {
                                 print_delay = strtoul(optarg, NULL, 10);
                                 break;
             			case 'R':
-                				tb_rate = strtoul(optarg, NULL, 10);
-                				break;
+                                        tb_rate = strtoul(optarg, NULL, 10);
+                                        break;
             			case 'D':
-                				tb_depth = strtoul(optarg, NULL, 10);
-                                tb_tokens = tb_depth;
-                				break;
+                                        tb_depth = strtoul(optarg, NULL, 10);
+                                        tb_tokens = tb_depth;
+                                        break;
                         case '?':
                                 usage(progname);
                                 if (optopt == 'd')
